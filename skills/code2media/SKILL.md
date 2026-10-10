@@ -6,7 +6,7 @@ description: "Universal media renderer with no fixed template — any custom lay
 description_zh: 通用多媒体渲染:不限模板、尺寸与风格,把内容渲染成精确的图片、矢量 SVG、分页 PDF 和动图。离线渲染,无需浏览器,毫秒级出图,文字排版 100% 精确。
 description_en: The universal media renderer — no fixed templates, any layout, size or style, rendered as precise images, vector SVG, paged PDFs and animations. Offline, no browser, millisecond-per-render.
 category: image
-version: 1.2.2
+version: 1.3.0
 author: AutoClaw
 ---
 
@@ -25,7 +25,7 @@ author: AutoClaw
 
 ## 工作流程
 
-1. **选起点**:优先修改 `templates/` 里的现成模板(见下方清单);没有合适的再从零写。语法规则必须遵守 `@references/syntax-guide.md`,最重要的三条:
+1. **选起点**:优先修改 `templates/` 里的现成模板(见下方清单);没有合适的再从零写。模板展示的是结构与能力面——配色与气质按任务重新决策,别把示例样式当默认交付。语法规则必须遵守 `@references/syntax-guide.md`,最重要的三条:
    - Tailwind 工具类写在 **`tw` 属性**里(`class` 属性不编译 Tailwind,只匹配普通 CSS 选择器)
    - 用 Tailwind v4 规范名(渐变是 `bg-linear-to-br`,不是 v3 的 `bg-gradient-to-br`)
    - 根元素撑满画布:`tw="w-full h-full ..."`
@@ -79,4 +79,4 @@ JPEG/WebP 可加 `--quality 80`。PDF 表格加 `style="break-inside:avoid"` 防
 - 首次运行自动 `npm install`(安装进 scripts/ 目录),之后离线可用;若目标环境完全断网,需在有网环境预装后再拷贝,或提前执行一次安装。
 - 中文/Emoji 显示为方块(豆腐块):容器缺字体。安装 `font-noto-cjk`(Alpine)或 `fonts-noto-cjk`(Debian)后重跑;或用 `--font` 指定字体文件。详见 `@references/syntax-guide.md`。
 - Emoji 默认经 Twemoji CDN 在线获取;完全离线的环境让模板保持纯文本。
-- 渲染报错信息以 `Error` 开头输出在 stderr,按提示修正模板后重试。
+- 渲染报错信息以 `Error` 开头输出在 stderr,按提示修正模板后重试;两类高发的**静默**失败会在渲染前以 `Warning` 提示:`class` 里误写了 Tailwind 工具类、模板含中文但未探测到 CJK 字体。

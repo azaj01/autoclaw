@@ -6,7 +6,7 @@ description: 开发票/生成发票/报价单/收据/采购单/对账单/账单/
 description_zh: 生成正式商务票据 PDF:发票、报价单、收据、采购单、对账单、账单。金额右对齐、税行规范、表格跨页表头重复、页码页脚,中英双语排版可选。离线毫秒级渲染,支持按订单数据批量出票。
 description_en: Generate formal business document PDFs — invoices, quotes, purchase orders, receipts, statements. Right-aligned amounts, tax lines, repeating table headers across pages, page-number footers, optional bilingual layouts. Offline, batch-ready.
 category: office
-version: 1.0.1
+version: 1.1.0
 author: AutoClaw
 ---
 
@@ -57,7 +57,7 @@ node "<技能目录>/scripts/render.mjs" --html invoice.html --pdf -o invoice.pd
 - [ ] 总计 = 明细之和(含税计算正确,税率单列)
 - [ ] 单据编号、双方名称、日期完整
 - [ ] 明细超过一页时:第 2 页起表头是否重复、页码是否正确
-- [ ] 中文无豆腐块(容器需 `font-noto-cjk` 字体包,或 `--font` 指定)
+- [ ] 中文无豆腐块(容器需 `font-noto-cjk` 字体包,或 `--font` 指定;渲染脚本探测不到 CJK 字体时会提前 Warning)
 - [ ] PDF 文字可选中、可搜索(本技能默认满足)
 
 ## 环境要求

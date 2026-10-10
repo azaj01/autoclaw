@@ -13,6 +13,7 @@
 **关键陷阱**:
 - Tailwind 工具类放在 `class` 属性里**不会编译**——整块样式静默失效(背景全透明)。工具类永远写 `tw`。
 - `class` 属性的用途是配合 `<style>` 块里的普通选择器。
+- flex 子项默认可收缩:同一行里各定宽列的总宽超过容器时,每列被**等比压窄**(不报错、不裁剪)——价目表/数字列错位多源于此。多列对齐的定宽列一律加 `shrink-0`(tw 内)或内联 `style="width:..px;flex-shrink:0"`。
 
 ## 2. Tailwind v4 命名
 
@@ -20,13 +21,13 @@
 - 渐变:`bg-linear-to-br`(不是 `bg-gradient-to-br`)+ `from-blue-600 to-indigo-900`
 - 透明度修饰符可用:`bg-white/10`、`bg-blue-500/20`
 - 常用:`w-full h-full flex flex-col items-center justify-center gap-4 p-16 rounded-2xl rounded-full text-6xl font-bold leading-tight tracking-widest mt-10 space-y-2`
-- 任意值:`text-[10px]`、`w-[220px]`
+- 任意值可用:`text-[48px]`、`w-[340px]` 与内联 px 等效;但任意值不防 flex 收缩,定宽列对齐仍需 `shrink-0`(见第 1 节陷阱)
 
 ## 3. 布局要点
 
 - 根元素必须撑满画布:`tw="w-full h-full"`,否则内容按自身高度渲染。
 - 布局引擎:Flexbox、CSS Grid、block、inline、float、`calc()`、绝对定位、z-index 均支持。
-- `w-14 h-14 w-36 text-6xl` 等标准尺寸刻度可用;复杂尺寸用任意值或内联 style。
+- `w-14 h-14 w-36 text-6xl` 等标准尺寸刻度可用;非刻度尺寸用任意值(如 `w-[340px]`)或内联 style,两种写法等效。
 
 ## 4. 字体
 

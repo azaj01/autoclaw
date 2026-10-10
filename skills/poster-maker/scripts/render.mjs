@@ -110,7 +110,34 @@ function resolveFonts() {
   }
   return fonts;
 }
+const fontArgs = args.flatMap((a, i) => (a === '--font' ? [args[i + 1]] : []));
 const fonts = resolveFonts();
+const fontsAutoDetected = !flag('no-fonts') && fontArgs.length === 0;
+
+// Cheap pre-flight checks for the two most common silent failures: Tailwind
+// utilities typed into class="..." (never compiled there) and CJK text with no
+// CJK font registered (tofu blocks). Warnings go to stderr; rendering proceeds.
+function lintTemplate(html) {
+  const warnings = [];
+  const UTILITY = /^(text-|bg-|w-|h-|min-w-|max-w-|flex|gap-|p[xytlrb]?-|m[xytlrb]?-|rounded|font-|items-|justify-|self-|content-|space-|leading-|tracking-|border|grid|absolute|relative|sticky|inset-|top-|bottom-|left-|right-|z-|opacity-|shadow|from-|via-|to-|overflow-|object-|shrink-|grow-)/;
+  const styleCss = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map(m => m[1]).join('\n');
+  const seen = new Set();
+  for (const m of html.matchAll(/class=["']([^"']*)["']/g)) {
+    for (const token of m[1].split(/\s+/).filter(Boolean)) {
+      if (seen.has(token) || !UTILITY.test(token) || styleCss.includes(`.${token}`)) continue;
+      seen.add(token);
+      warnings.push(`class 里的 "${token}" 不会按 Tailwind 编译(工具类必须写在 tw 属性);若它不是 <style> 选择器请移到 tw`);
+    }
+  }
+  const CJK_FONT = /msyh|simhei|simsun|kaiti|fangsong|dengxian|pingfang|hiragino|notosanscjk|notoserifcjk|sourcehan|wqy|sarasa|zenhei/i;
+  const hasCJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(html.replace(/<[^>]*>/g, ' '));
+  if (fontsAutoDetected && fonts.length > 0 && hasCJK && !fonts.some(f => CJK_FONT.test(f.name))) {
+    warnings.push('模板含中日韩文字,但未探测到 CJK 字体,中文会渲染成方块:安装 font-noto-cjk(Alpine)/fonts-noto-cjk(Debian),或用 --font 指定字体文件');
+  }
+  return warnings;
+}
+for (const w of lintTemplate(template)) console.error(`Warning: ${w}`);
+console.error(`Fonts: ${fonts.length > 0 ? fonts.map(f => f.name).join(', ') : 'none (--no-fonts)'}`);
 
 const width = Number(opt('width')) || 1200;
 const height = Number(opt('height')) || 630;
@@ -134,7 +161,7 @@ try {
     }
     const bytes = await renderPdf(template, options);
     fs.writeFileSync(output, Buffer.from(bytes));
-    console.log(`OK PDF ${bytes.length} bytes -> ${output}`);
+    console.log(`OK PDF ${options.size} ${bytes.length} bytes -> ${output}`);
     process.exit(0);
   }
 
@@ -152,7 +179,7 @@ try {
       fonts, ...(css ? { css } : {})
     });
     fs.writeFileSync(output, Buffer.from(bytes));
-    console.log(`OK animation ${fmt.toUpperCase()} ${bytes.length} bytes -> ${output}`);
+    console.log(`OK animation ${fmt.toUpperCase()} ${width}x${height} ${bytes.length} bytes -> ${output}`);
     process.exit(0);
   }
 
@@ -161,7 +188,7 @@ try {
   if (format === 'svg') {
     const svg = await renderSvg(template, { width, height, fonts, ...(css ? { css } : {}) });
     fs.writeFileSync(output, svg, 'utf-8');
-    console.log(`OK SVG ${Buffer.byteLength(svg)} bytes -> ${output}`);
+    console.log(`OK SVG ${width}x${height} ${Buffer.byteLength(svg)} bytes -> ${output}`);
   } else {
     const VALID = ['png', 'jpeg', 'webp'];
     if (!VALID.includes(format)) error(`invalid format '${format}'. Supported: png, jpeg, webp, svg (or use --pdf / --animation).`);
