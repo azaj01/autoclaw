@@ -93,6 +93,9 @@ Or use the CLI command if installed globally:
 autoclaw
 ```
 
+## Concurrency Model
+AutoClaw runs on a single Node.js event loop, and correctness of its shared state relies on that assumption. The batch worker pool, tool handlers, and streaming all interleave on one thread — never introduce worker threads or processes sharing this state. Any temporary global mutation must be re-entrancy safe by reference counting (see `runToolQuietly` in `src/agent.ts`: overlapping concurrent agents patch the same `console` object, and only the outermost call restores it). Task deadlines and durations use the monotonic clock (`performance.now()`), never wall-clock time.
+
 ## Conventions for Changes
 - Before committing, run `npm test` and `npm run build`; both must pass.
 - New tools should follow the `ToolModule` pattern in `src/tools/interface.ts` and be registered in `src/tools/index.ts`, with unit tests and mocked external services.

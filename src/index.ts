@@ -101,7 +101,7 @@ dotenv.config({ path: GLOBAL_ENV_FILE });
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // In dist/index.js, package.json is usually up one level in the root
 const pkgPath = path.join(__dirname, '..', 'package.json');
-let version = '1.3.7';
+let version = '1.3.8';
 
 try {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
@@ -177,12 +177,16 @@ skillCmd
 
 skillCmd
   .command('install <target>')
-  .description('Install a skill from an https .zip URL, a local .zip, or a directory (into ~/.autoclaw/skills/)')
-  .action(async (target: string) => {
+  .description('Install a skill from an https .zip URL, a local .zip, or a directory (default: ~/.autoclaw/skills/; -p: .autoclaw/skills/)')
+  .option('-p, --project', 'Install into the project scope (.autoclaw/skills/) instead of the user scope — commit it to share skills with a team')
+  .action(async (target, cmdOptions) => {
     try {
+      const dest = cmdOptions.project
+        ? { userDir: path.join(process.cwd(), '.autoclaw', 'skills') }
+        : undefined;
       const result = /^https:\/\//.test(target)
-        ? await installSkillFromUrl(target)
-        : installSkill(target);
+        ? await installSkillFromUrl(target, dest)
+        : installSkill(target, dest);
       console.log(chalk.green(`Installed skill '${result.name}' (${result.files} files) -> ${result.dir}`));
       console.log(chalk.dim('Verify with: autoclaw skill list'));
     } catch (err: any) {
@@ -245,7 +249,9 @@ program
     process.exit(failed.length === 0 ? 0 : 1);
   });
 
-program.parse(process.argv);
+// Command dispatch happens at the bottom of this file (after every
+// module-level binding has initialized), via parseAsync so async action
+// handlers' rejections land in one catch instead of an unhandled rejection.
 
 async function runSetup(options: any = {}) {
   const isProject = options.project;
@@ -755,6 +761,12 @@ async function runBatchCommand(manifestPath: string, globalOptions: any, cmdOpti
   };
 
   console.log(chalk.bold.cyan(`AutoClaw Batch 🦞  ${entries.length} task(s)${concurrency > 1 ? ` (concurrency ${concurrency})` : ''}${resumeState ? ' [resume]' : ''}`));
+  // Unattended batch without --yes: no human can answer a confirmation
+  // prompt, so every execute_shell_command will be denied. That is almost
+  // always an accident — say so before hours of tasks burn their step caps.
+  if (!fullConfig.autoConfirm && !process.stdin.isTTY) {
+    console.log(chalk.yellow(`Warning: no --yes and stdin is not a terminal — every shell command will be denied (file/web tools still work). If the tasks need the shell, re-run with -y.`));
+  }
   console.log(chalk.dim(`Results: ${outputPath}\n`));
   const startedAt = Date.now();
   interruptedExitCode = 130;
@@ -909,8 +921,9 @@ function isUserAbort(err: any): boolean {
     || (err.message && (err.message.includes('User force closed') || err.message.includes('Prompt was canceled')));
 }
 
-// Global error handler
-main().catch(err => {
+// Global error handler — parseAsync is the single promise every async action
+// handler chains onto, so this catch actually receives their failures.
+program.parseAsync(process.argv).catch(err => {
   if (isUserAbort(err)) {
     console.log(chalk.cyan("\nGoodbye!"));
     process.exit(0);
@@ -918,8 +931,3 @@ main().catch(err => {
   console.error(chalk.red("Fatal Error:"), err);
   process.exit(1);
 });
-
-async function main() {
-  // Just a wrapper to keep the promise chain clean if needed, 
-  // but currently logic is triggered by program.parse()
-}

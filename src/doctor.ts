@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { createRequire } from 'module';
 import { testConnection } from './setup.js';
 import { getBashPath, resolveShellType } from './shell.js';
+import { defaultSkillScopes, discoverSkills } from './skills.js';
 import { getToolDefinitions, listUnavailableTools } from './tools/index.js';
 
 export interface DoctorCheck {
@@ -98,6 +99,20 @@ export async function collectDoctorChecks(cfg: DoctorConfig): Promise<DoctorChec
     critical: false,
     detail: `${registered} registered${missing.length ? ` (not configured: ${missing.join(', ')})` : ''}`
   });
+
+  // Broken skill directories are silently skipped at discovery; surface them
+  // here so "why is my skill not triggering" has a headless answer.
+  let skillDetail = '0 discovered';
+  try {
+    const { skills, warnings } = discoverSkills(defaultSkillScopes());
+    skillDetail = `${skills.length} discovered`;
+    if (warnings.length > 0) {
+      skillDetail += `, ${warnings.length} skipped — run: autoclaw skill list (${warnings[0]})`;
+    }
+  } catch (err: any) {
+    skillDetail = `discovery failed: ${String(err?.message ?? err).split('\n')[0]}`;
+  }
+  checks.push({ name: 'Skills', ok: !skillDetail.includes('skipped') && !skillDetail.includes('failed'), critical: false, detail: skillDetail });
 
   const pw = playwrightBrowserStatus();
   checks.push({ name: 'Playwright browsers', ok: pw.ok, critical: false, detail: pw.detail });

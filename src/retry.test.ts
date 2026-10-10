@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isRetryableError, withRetry } from './retry.js';
+import { DEFAULT_MAX_DELAY_MS, isRetryableError, retryDelayMs, withRetry } from './retry.js';
 
 const noSleep = async () => {};
 
 describe('isRetryableError', () => {
-  it('retries 429/408/5xx status errors', () => {
+  it('retries 429/408/409/5xx status errors', () => {
     expect(isRetryableError({ status: 429 })).toBe(true);
     expect(isRetryableError({ status: 408 })).toBe(true);
+    expect(isRetryableError({ status: 409 })).toBe(true);
     expect(isRetryableError({ status: 503 })).toBe(true);
     expect(isRetryableError(new Error('Request failed with status code 502'))).toBe(true);
   });
@@ -22,6 +23,24 @@ describe('isRetryableError', () => {
     expect(isRetryableError({ code: 'ECONNRESET' })).toBe(true);
     expect(isRetryableError({ code: 'ETIMEDOUT' })).toBe(true);
     expect(isRetryableError(new Error('fetch failed'))).toBe(true);
+  });
+});
+
+describe('retryDelayMs', () => {
+  it('applies ±25% jitter around the exponential backoff', () => {
+    for (let i = 0; i < 50; i++) {
+      const delay = retryDelayMs(2, 1000, DEFAULT_MAX_DELAY_MS); // exponential = 2000
+      expect(delay).toBeGreaterThanOrEqual(1500);
+      expect(delay).toBeLessThanOrEqual(2500);
+    }
+  });
+
+  it('caps the backoff so deep retry chains do not sleep unboundedly', () => {
+    for (let i = 0; i < 50; i++) {
+      const delay = retryDelayMs(30, 1000, 8000); // exponential would be ~1e9ms
+      expect(delay).toBeGreaterThanOrEqual(6000);
+      expect(delay).toBeLessThanOrEqual(10000);
+    }
   });
 });
 

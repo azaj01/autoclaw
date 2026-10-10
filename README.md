@@ -124,7 +124,7 @@ autoclaw batch tasks.jsonl -o out.jsonl --fail-fast
 ```
 Manifest lines are `{"id": "...", "task": "..."}` — `id` is optional (defaults to `task-N`); blank lines and `#` comments are skipped. Optional per-task overrides: `maxSteps`, `model`, `provider`.
 
-One failing task does not stop the batch (use `--fail-fast` for that). The process exits `0` when every task completed, `1` otherwise, so cron and K8s Jobs can detect bad batches. Task output stays human-readable on stdout — the results file is the machine-readable contract, with `status`, `steps`, `message`, `error` and `usage` per task. Each result line is appended the moment its task finishes, so a crashed or killed batch keeps everything that completed.
+One failing task does not stop the batch (use `--fail-fast` for that). The process exits `0` when every task completed, `1` otherwise, so cron and K8s Jobs can detect bad batches. Task output stays human-readable on stdout — the results file is the machine-readable contract, with `status`, `steps`, `message`, `error` and `usage` per task. Each result line is appended the moment its task finishes, so a crashed or killed batch keeps everything that completed. Running a headless batch without `--yes` prints a warning first: with no terminal attached, every shell command would be denied (file/web tools still work).
 
 Long batches can stop and pick up where they left off, and can use local parallelism:
 ```bash
@@ -132,6 +132,8 @@ autoclaw batch big.jsonl -y --resume        # skip tasks already completed in th
 autoclaw batch big.jsonl -y -c 4            # run up to 4 tasks in parallel
 ```
 Unattempted tasks are simply absent from the results file, so `--fail-fast` followed by `--resume` is a natural retry loop. Interrupting a batch with Ctrl+C exits with code `130` — completed results stay in the file for the next `--resume`. With `-c 2` or higher, per-task progress detail is suppressed (it goes to stderr) and stdout carries only the one-line-per-task summary, so concurrent output stays readable.
+
+Because the model endpoint is plain `OPENAI_BASE_URL`, AutoClaw also slots in as the rollout harness of agentic-RL frameworks such as [Agent Lightning](https://github.com/microsoft/agent-lightning): point the env var at the training gateway and each batch task becomes a fully tooled rollout, no code changes on either side.
 
 AutoClaw also keeps its own prompt lean: optional tools (web search, email, group notifications, image generation) only register once their credentials are configured, and in long loops older tool results in the model context are replaced by short excerpts. Saved tool outputs in `~/.autoclaw/output/` are pruned after 7 days and the local run log is rotated once it exceeds 2 MB, so unattended swarms do not slowly fill the disk.
 
@@ -143,6 +145,7 @@ Scopes (later shadows earlier on name collision): built-in `skills/` (ships with
 ```bash
 autoclaw skill list                     # show discovered skills with scope and version
 autoclaw skill install <zip|dir|https-url>  # install into ~/.autoclaw/skills/ (zip-slip protected)
+autoclaw skill install <target> -p      # install into .autoclaw/skills/ instead (commit it to share with a team)
 autoclaw skill remove <name>            # remove a user-installed skill (built-ins are protected)
 autoclaw skill pack <dir>               # zip a skill dir -> <name>-skill-<version>.zip (SKILL.md at zip root)
 ```
@@ -189,7 +192,7 @@ autoclaw "Refactor src/index.ts to use ES modules" -y
 - `--json`: Emit NDJSON events on stdout (for orchestrators; use with `-n`).
 
 ### Diagnostics
-`autoclaw doctor` checks everything headlessly and prints ✓/✗ per item: config files, resolved provider/baseUrl/model, API key, a live connection test, resolved shell, registered tools, and playwright browser status. Exit `0` = ready, `1` = a critical item failed (the failing item is printed). Ideal for CI or a fresh machine.
+`autoclaw doctor` checks everything headlessly and prints ✓/✗ per item: config files, resolved provider/baseUrl/model, API key, a live connection test, resolved shell, registered tools, discovered skills (with skipped/broken directories surfaced), and playwright browser status. Exit `0` = ready, `1` = a critical item failed (the failing item is printed). Ideal for CI or a fresh machine.
 
 ### Sandbox
 Command execution can be confined with `config.sandbox` / `AUTOCLOW_SANDBOX` (vocabulary borrowed from DeepSeek Harness):

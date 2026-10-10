@@ -221,7 +221,10 @@ RULES OF ENGAGEMENT:
     // events instead; quietProgress (concurrent batch workers) suppresses all
     // per-task detail so stdout carries only the batch's own summary lines.
     const verbose = !this.jsonMode && !this.quietProgress;
-    const deadline = taskTimeoutMs > 0 ? Date.now() + taskTimeoutMs : Number.POSITIVE_INFINITY;
+    // Monotonic clock for the deadline: a wall-clock jump (NTP correction,
+    // manual change) must never extend or shorten a task's timeout in an
+    // unattended batch.
+    const deadline = taskTimeoutMs > 0 ? performance.now() + taskTimeoutMs : Number.POSITIVE_INFINITY;
     const abortController = new AbortController();
     const abortTimer = taskTimeoutMs > 0
       ? setTimeout(
@@ -229,7 +232,7 @@ RULES OF ENGAGEMENT:
           taskTimeoutMs
         )
       : null;
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     let active = true;
     let step = 0;
     let status: AgentRunResult['status'] = 'completed';
@@ -250,7 +253,7 @@ RULES OF ENGAGEMENT:
         }
         break;
       }
-      if (Date.now() > deadline) {
+      if (performance.now() > deadline) {
         status = 'timeout';
         if (verbose) {
           console.log(chalk.yellow(`\n[TaskTimeout] Wall-clock limit of ${taskTimeoutMs}ms reached; stopping.`));
@@ -538,7 +541,7 @@ RULES OF ENGAGEMENT:
         steps: result.steps,
         ...(result.error ? { error: result.error.slice(0, 300) } : {}),
         ...(result.usage ? { usage: result.usage } : {}),
-        durationMs: Date.now() - startedAt
+        durationMs: performance.now() - startedAt
       });
       fs.appendFileSync(path.join(dir, 'runs.jsonl'), line + '\n');
     } catch {

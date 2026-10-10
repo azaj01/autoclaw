@@ -492,6 +492,42 @@ describe('Agent.chat', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it('times out on the monotonic clock, immune to wall-clock jumps', async () => {
+    const { Agent } = await import('./agent.js');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    let fakeNow = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+
+    mocks.createMock.mockImplementation(async () =>
+      streamFrom([
+        {
+          tool_calls: [
+            { index: 0, id: `call-${Math.random()}`, type: 'function', function: { name: 'read_file', arguments: '{}' } }
+          ]
+        }
+      ])
+    );
+    // Each tool call also drags the wall clock 10 minutes into the future —
+    // far past a wall-clock deadline. The timeout budget is 30 s of real
+    // time, which the test never approaches; only a Date.now()-based
+    // deadline would stop this loop, and only as a spurious "timeout".
+    mocks.executeToolHandlerMock.mockImplementation(async () => {
+      fakeNow += 10 * 60 * 1000;
+      return 'ok';
+    });
+
+    try {
+      const agent = new Agent('test-key', undefined, 'test-model', { taskTimeoutMs: 30000, maxSteps: 100 });
+      const result = await agent.chat('clock jumps');
+
+      expect(result.status).toBe('max_steps');
+    } finally {
+      vi.mocked(Date.now).mockRestore();
+    }
+  });
+
   it('appends escalating reminders when the identical tool call repeats', async () => {
     const { Agent } = await import('./agent.js');
     vi.spyOn(console, 'log').mockImplementation(() => {});

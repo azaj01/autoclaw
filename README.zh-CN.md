@@ -125,7 +125,7 @@ autoclaw batch tasks.jsonl -o out.jsonl --fail-fast
 ```
 清单每行为 `{"id": "...", "task": "..."}`——`id` 可省略（默认 `task-N`）；空行和 `#` 注释行会跳过。可选的每任务覆盖项：`maxSteps`、`model`、`provider`。
 
-单个任务失败不会中断批次（需要中断用 `--fail-fast`）。全部完成时进程退出 `0`，否则 `1`，cron 和 K8s Job 由此感知批次成败。任务输出保持人类可读——结果文件才是机器可读契约，含每个任务的 `status`、`steps`、`message`、`error`、`usage`。每条结果在对应任务完成的瞬间即追加落盘，批次中途崩溃或被杀也已保住全部已完成的结果。
+单个任务失败不会中断批次（需要中断用 `--fail-fast`）。全部完成时进程退出 `0`，否则 `1`，cron 和 K8s Job 由此感知批次成败。任务输出保持人类可读——结果文件才是机器可读契约，含每个任务的 `status`、`steps`、`message`、`error`、`usage`。每条结果在对应任务完成的瞬间即追加落盘，批次中途崩溃或被杀也已保住全部已完成的结果。无终端环境下不带 `--yes` 跑 batch 会先打警告：所有 shell 命令都会被拒绝（文件/网页类工具不受影响）。
 
 长批次可以中途停、从断点继续，也可以本地并行：
 ```bash
@@ -133,6 +133,8 @@ autoclaw batch big.jsonl -y --resume        # 跳过结果文件中已完成的�
 autoclaw batch big.jsonl -y -c 4            # 最多 4 个任务并行
 ```
 未执行的任务不会出现在结果文件里，所以 `--fail-fast` 之后接 `--resume` 就是天然的重试循环。Ctrl+C 中断批次时进程以退出码 `130` 结束，已完成的结果留在文件里供下次 `--resume` 使用。`-c 2` 及以上时，每任务的详细进度被抑制（改走 stderr），stdout 只保留每任务一行摘要，并发输出不再交错。
+
+由于模型端点就是一个普通的 `OPENAI_BASE_URL`,AutoClaw 还可以直接充当 agentic RL 框架（如 [Agent Lightning](https://github.com/microsoft/agent-lightning)）的 rollout harness：把该环境变量指向训练网关，每个 batch 任务即成为带完整工具的 rollout，双方都无需改一行代码。
 
 AutoClaw 同时会自动给提示词瘦身：可选工具（网页搜索、邮件、群通知、图像生成）只在凭据配置后才会注册进工具定义；长循环中较早的工具结果会被替换为短摘要。`~/.autoclaw/output/` 里的工具输出保留 7 天后自动清理，本地运行日志超过 2 MB 自动轮转——无人值守的蜂群不会慢慢撑满磁盘。
 
@@ -144,6 +146,7 @@ AutoClaw 支持 `SKILL.md` 技能包——与 WorkBuddy 技能商店相同的格
 ```bash
 autoclaw skill list                     # 列出发现的技能(含作用域与版本)
 autoclaw skill install <zip|目录|https地址>  # 安装到 ~/.autoclaw/skills/(含 zip-slip 防护)
+autoclaw skill install <目标> -p         # 改装到 .autoclaw/skills/(提交进仓库即可与团队共享)
 autoclaw skill remove <name>            # 移除用户级技能(内置技能受保护)
 autoclaw skill pack <目录>               # 打包为商店上传 zip(默认 <name>-skill-<version>.zip,SKILL.md 位于 zip 根目录)
 ```
@@ -190,7 +193,7 @@ autoclaw "将 src/index.ts 重构为使用 ES 模块" -y
 - `--json`: 在 stdout 输出 NDJSON 事件流 (供编排器使用,配合 `-n`)。
 
 ### 诊断
-`autoclaw doctor` 无头完成全面自检,逐项打印 ✓/✗:配置文件、解析出的 provider/baseUrl/model、API key、真实连接测试、解析出的 shell、已注册工具、playwright 浏览器状态。退出 `0` = 就绪,`1` = 有关键项失败(会打印是哪项)。适合 CI 或新机器。
+`autoclaw doctor` 无头完成全面自检,逐项打印 ✓/✗:配置文件、解析出的 provider/baseUrl/model、API key、真实连接测试、解析出的 shell、已注册工具、发现的技能(损坏/被跳过的技能目录会显示出来)、playwright 浏览器状态。退出 `0` = 就绪,`1` = 有关键项失败(会打印是哪项)。适合 CI 或新机器。
 
 ### 沙箱
 命令执行可通过 `config.sandbox` / `AUTOCLOW_SANDBOX` 加以约束(词汇借鉴自 DeepSeek Harness):

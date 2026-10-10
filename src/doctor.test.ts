@@ -68,6 +68,10 @@ describe('collectDoctorChecks', () => {
     const pw = checks.find(c => c.name === 'Playwright browsers');
     expect(pw?.critical).toBe(false);
     expect(typeof pw?.ok).toBe('boolean');
+
+    const skills = checks.find(c => c.name === 'Skills');
+    expect(skills?.critical).toBe(false);
+    expect(skills?.detail).toContain('discovered');
   });
 
   it('flags a missing global config as critical', async () => {

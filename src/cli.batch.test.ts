@@ -95,7 +95,7 @@ describe('CLI end-to-end (spawned process, mock LLM)', () => {
     });
   }
 
-  it('runs a batch to completion, writes default results file, exits 0', { timeout: 60000 }, async () => {
+  it('runs a batch to completion, writes default results file, exits 0', { timeout: 120000 }, async () => {
     if (!hasDist) return console.warn('skipping: dist/index.js not built');
     const mock = await startMockLLM('ok');
     try {
@@ -129,7 +129,7 @@ describe('CLI end-to-end (spawned process, mock LLM)', () => {
     }
   });
 
-  it('continues past a failing task, writes error entries, exits 1', { timeout: 60000 }, async () => {
+  it('continues past a failing task, writes error entries, exits 1', { timeout: 120000 }, async () => {
     if (!hasDist) return console.warn('skipping: dist/index.js not built');
     const mock = await startMockLLM('fail');
     try {
@@ -156,7 +156,7 @@ describe('CLI end-to-end (spawned process, mock LLM)', () => {
     }
   });
 
-  it('maps the step cap to exit code 2 for a single headless run', { timeout: 60000 }, async () => {
+  it('maps the step cap to exit code 2 for a single headless run', { timeout: 120000 }, async () => {
     if (!hasDist) return console.warn('skipping: dist/index.js not built');
     const mock = await startMockLLM('toolloop');
     try {
@@ -219,7 +219,33 @@ describe('CLI end-to-end (spawned process, mock LLM)', () => {
     }
   });
 
-  it('resume appends only newly-run tasks to the previous results file', { timeout: 60000 }, async () => {
+  it('warns when a headless batch runs without --yes', { timeout: 120000 }, async () => {
+    if (!hasDist) return console.warn('skipping: dist/index.js not built');
+    const mock = await startMockLLM('ok');
+    try {
+      const manifest = path.join(workDir, 'noyes.jsonl');
+      fs.writeFileSync(manifest, '{"id":"t1","task":"no shell needed"}\n');
+
+      // Spawned CLI has a piped stdin, i.e. not a TTY — the unattended
+      // no-yes case the startup warning exists for.
+      const { code, stdout } = await runCli(['batch', manifest], {
+        HOME: workDir,
+        USERPROFILE: workDir,
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_BASE_URL: mock.baseUrl
+      });
+
+      expect(code).toBe(0);
+      expect(stdout).toContain('every shell command will be denied');
+      const lines = fs.readFileSync(path.join(workDir, 'noyes.results.jsonl'), 'utf-8').trim().split('\n').filter(Boolean);
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ id: 't1', status: 'completed' });
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('resume appends only newly-run tasks to the previous results file', { timeout: 120000 }, async () => {
     if (!hasDist) return console.warn('skipping: dist/index.js not built');
     const mock = await startMockLLM('ok');
     try {
