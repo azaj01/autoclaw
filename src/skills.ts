@@ -146,19 +146,36 @@ function truncate(text: string, max: number): string {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
+// A 1000-task batch constructs 1000 agents and each would otherwise rescan
+// every skill directory (readdir + readFileSync per SKILL.md). Cache the
+// manifest per resolved scope list for the process lifetime; explicit
+// `scopes` arguments (tests, custom callers) bypass the cache so on-disk
+// changes between calls are still observed. install/remove invalidate it.
+const manifestCache = new Map<string, string | null>();
+
+export function clearSkillsManifestCache(): void {
+  manifestCache.clear();
+}
+
 export function buildSkillsManifest(config?: any, scopes?: SkillScope[]): string | null {
   if (config?.skillsEnabled === false) return null;
-  const { skills } = discoverSkills(scopes || defaultSkillScopes());
+  const effective = scopes || defaultSkillScopes();
+  const cacheKey = effective.map(s => `${s.source}:${path.resolve(s.dir)}`).join('|');
+  if (!scopes) {
+    const cached = manifestCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+  }
+  const { skills } = discoverSkills(effective);
   const visible = skills.filter(s => s.disableModelInvocation !== true);
-  if (visible.length === 0) return null;
-  const lines = visible.map(s =>
-    `- ${s.name}${s.version ? ` (v${s.version})` : ''}: ${truncate(s.description, 400)} [read ${s.skillMdPath}]`
-  );
-  return [
+  const manifest = visible.length === 0 ? null : [
     'INSTALLED SKILL PACKAGES (procedural capabilities bundling instructions, scripts and templates).',
     'When a task matches a skill, first read its SKILL.md and follow it — skills run through your normal file and shell tools, no special API:',
-    ...lines,
+    ...visible.map(s =>
+      `- ${s.name}${s.version ? ` (v${s.version})` : ''}: ${truncate(s.description, 400)} [read ${s.skillMdPath}]`
+    ),
   ].join('\n');
+  if (!scopes) manifestCache.set(cacheKey, manifest);
+  return manifest;
 }
 
 // ---- install / remove ----
@@ -209,6 +226,7 @@ export function installSkill(target: string, opts?: { userDir?: string }): { nam
     const name = pickSafeName(parsed?.frontmatter.name, path.basename(path.resolve(target)));
     const dest = path.join(userDir, name);
     const files = copyTree(target, dest);
+    clearSkillsManifestCache();
     return { name, dir: dest, files };
   }
 
@@ -244,6 +262,7 @@ export function installSkill(target: string, opts?: { userDir?: string }): { nam
     fs.mkdirSync(path.dirname(t.destFile), { recursive: true });
     fs.writeFileSync(t.destFile, t.data);
   }
+  clearSkillsManifestCache();
   return { name, dir: dest, files: targets.length };
 }
 
@@ -284,6 +303,7 @@ export function removeSkill(name: string, opts?: { userDir?: string; scopes?: Sk
   const dir = path.resolve(skill.dir);
   if (!dir.startsWith(userDir + path.sep)) return 'not-found'; // never delete outside the user scope
   fs.rmSync(dir, { recursive: true, force: true });
+  clearSkillsManifestCache();
   return 'removed';
 }
 

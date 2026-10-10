@@ -124,16 +124,16 @@ autoclaw batch tasks.jsonl -o out.jsonl --fail-fast
 ```
 Manifest lines are `{"id": "...", "task": "..."}` — `id` is optional (defaults to `task-N`); blank lines and `#` comments are skipped. Optional per-task overrides: `maxSteps`, `model`, `provider`.
 
-One failing task does not stop the batch (use `--fail-fast` for that). The process exits `0` when every task completed, `1` otherwise, so cron and K8s Jobs can detect bad batches. Task output stays human-readable on stdout — the results file is the machine-readable contract, with `status`, `steps`, `message`, `error` and `usage` per task.
+One failing task does not stop the batch (use `--fail-fast` for that). The process exits `0` when every task completed, `1` otherwise, so cron and K8s Jobs can detect bad batches. Task output stays human-readable on stdout — the results file is the machine-readable contract, with `status`, `steps`, `message`, `error` and `usage` per task. Each result line is appended the moment its task finishes, so a crashed or killed batch keeps everything that completed.
 
 Long batches can stop and pick up where they left off, and can use local parallelism:
 ```bash
 autoclaw batch big.jsonl -y --resume        # skip tasks already completed in the results file
 autoclaw batch big.jsonl -y -c 4            # run up to 4 tasks in parallel
 ```
-Unattempted tasks are simply absent from the results file, so `--fail-fast` followed by `--resume` is a natural retry loop.
+Unattempted tasks are simply absent from the results file, so `--fail-fast` followed by `--resume` is a natural retry loop. Interrupting a batch with Ctrl+C exits with code `130` — completed results stay in the file for the next `--resume`. With `-c 2` or higher, per-task progress detail is suppressed (it goes to stderr) and stdout carries only the one-line-per-task summary, so concurrent output stays readable.
 
-AutoClaw also keeps its own prompt lean: optional tools (web search, email, group notifications, image generation) only register once their credentials are configured, and in long loops older tool results in the model context are replaced by short excerpts.
+AutoClaw also keeps its own prompt lean: optional tools (web search, email, group notifications, image generation) only register once their credentials are configured, and in long loops older tool results in the model context are replaced by short excerpts. Saved tool outputs in `~/.autoclaw/output/` are pruned after 7 days and the local run log is rotated once it exceeds 2 MB, so unattended swarms do not slowly fill the disk.
 
 ### Skills (Portable Capability Packages)
 AutoClaw runs `SKILL.md` skill packages — the same format used by the WorkBuddy skill store, so one package runs both inside AutoClaw and on other platforms. The system prompt only carries a one-line manifest per skill; when a task matches, the agent reads that skill's `SKILL.md` and follows it with the normal file and shell tools. There is no privileged runtime: skill scripts pass through the same destructive-command gate, sandbox and step caps as any command.

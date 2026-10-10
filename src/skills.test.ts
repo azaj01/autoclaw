@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   buildSkillsManifest,
+  clearSkillsManifestCache,
   discoverSkills,
   installSkill,
   installSkillFromUrl,
@@ -150,6 +151,20 @@ describe('buildSkillsManifest', () => {
     const manifest = buildSkillsManifest({}, scopes);
     expect(manifest).toContain('…');
     expect(manifest!.split('\n').find(l => l.includes('long-skill'))!.length).toBeLessThan(640);
+  });
+
+  it('caches default-scope manifests per process and recomputes deterministically after a clear', () => {
+    // Same reference => cache hit, no second disk scan.
+    const first = buildSkillsManifest({});
+    const second = buildSkillsManifest({});
+    expect(second).toBe(first);
+
+    // Explicit scopes always bypass the cache (tests observe disk changes).
+    writeSkill(scopes[0].dir, 'fresh', SAMPLE_SKILL_MD.replace('demo-skill', 'fresh-skill'));
+    expect(buildSkillsManifest({}, scopes)).toContain('fresh-skill');
+
+    clearSkillsManifestCache();
+    expect(buildSkillsManifest({})).toBe(first);
   });
 });
 

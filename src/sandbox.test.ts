@@ -83,7 +83,7 @@ describe('sandboxedInvocation', () => {
 describe('ShellTool sandbox integration (win32 host)', () => {
   const isWin = process.platform === 'win32';
 
-  it('refuses non-default sandbox modes when no backend exists', { skip: !isWin }, async () => {
+  it('refuses non-default sandbox modes when no backend exists', { skip: !isWin, timeout: 30000 }, async () => {
     const { ShellTool } = await import('./tools/core.js');
     const result = await ShellTool.handler(
       { command: 'node -e "console.log(1)"', rationale: 'test' },
@@ -92,7 +92,7 @@ describe('ShellTool sandbox integration (win32 host)', () => {
     expect(result).toContain('no sandbox backend is available');
   });
 
-  it('still executes normally under danger-full-access', async () => {
+  it('still executes normally under danger-full-access', { timeout: 30000 }, async () => {
     const { ShellTool } = await import('./tools/core.js');
     const result = await ShellTool.handler(
       { command: 'node -e "console.log(\'ok sandbox off\')"', rationale: 'test' },

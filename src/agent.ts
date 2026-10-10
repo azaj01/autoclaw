@@ -13,6 +13,43 @@ import { buildSkillsManifest } from './skills.js';
 
 const DEFAULT_MAX_STEPS = 25;
 const TOOL_RESULT_TRIM_MARKER = 'older tool output trimmed';
+const OUTPUT_RETENTION_DAYS = 7;
+const RUNS_LOG_MAX_BYTES = 2 * 1024 * 1024;
+
+// Best-effort retention for unattended runs: tool-output files older than
+// OUTPUT_RETENTION_DAYS are deleted and the runs log is rotated down to
+// roughly half its cap. Failures are swallowed — pruning must never fail a
+// run. Callers invoke this once per process, before any agent starts.
+export function pruneRunArtifacts(): void {
+  try {
+    const base = path.join(os.homedir(), '.autoclaw');
+    const outputDir = path.join(base, 'output');
+    if (fs.existsSync(outputDir)) {
+      const cutoff = Date.now() - OUTPUT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+      for (const name of fs.readdirSync(outputDir)) {
+        const file = path.join(outputDir, name);
+        try {
+          if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+        } catch { /* individual file — ignore */ }
+      }
+    }
+    const logPath = path.join(base, 'logs', 'runs.jsonl');
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > RUNS_LOG_MAX_BYTES) {
+      const lines = fs.readFileSync(logPath, 'utf-8').split('\n');
+      const kept: string[] = [];
+      let size = 0;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i]) continue;
+        size += lines[i].length + 1;
+        if (size > RUNS_LOG_MAX_BYTES / 2) break;
+        kept.unshift(lines[i]);
+      }
+      fs.writeFileSync(logPath, kept.join('\n') + '\n', 'utf-8');
+    }
+  } catch {
+    // ignore
+  }
+}
 
 // Canonical JSON: sorted object keys, so equivalent arguments from
 // different model turns map to the same repeat signature.
@@ -140,23 +177,50 @@ RULES OF ENGAGEMENT:
   }
 
   // Tool handlers print progress via console; in JSON mode stdout is an NDJSON
-  // contract, so route those prints to stderr for the duration of the call.
+  // contract, and in concurrent batch mode stdout belongs to the batch summary
+  // — in both cases those prints are rerouted to stderr for the duration of
+  // the call. Reference-counted so overlapping calls (concurrent agents in
+  // one process) never restore each other's redirect.
+  private static redirectDepth = 0;
+  private static savedConsole: Pick<Console, 'log' | 'info' | 'warn' | 'error'> | null = null;
+  private static readonly toStderr = (...args: unknown[]) => process.stderr.write(util.format(...args) + '\n');
+
   private async runToolQuietly(run: () => Promise<string>): Promise<string> {
-    const original = [console.log, console.info, console.warn, console.error];
-    const toStderr = (...args: unknown[]) => process.stderr.write(util.format(...args) + '\n');
-    [console.log, console.info, console.warn, console.error] = [toStderr, toStderr, toStderr, toStderr] as any;
+    if (Agent.redirectDepth++ === 0) {
+      Agent.savedConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+      [console.log, console.info, console.warn, console.error] =
+        [Agent.toStderr, Agent.toStderr, Agent.toStderr, Agent.toStderr] as any;
+    }
     try {
       return await run();
     } finally {
-      [console.log, console.info, console.warn, console.error] = original;
+      if (--Agent.redirectDepth === 0 && Agent.savedConsole) {
+        const saved = Agent.savedConsole;
+        [console.log, console.info, console.warn, console.error] =
+          [saved.log, saved.info, saved.warn, saved.error] as any;
+        Agent.savedConsole = null;
+      }
     }
+  }
+
+  private get quietProgress(): boolean {
+    return !!this.config?.quietProgress;
   }
 
   async chat(userInput: string): Promise<AgentRunResult> {
     this.messages.push({ role: "user", content: userInput });
 
-    const maxSteps = Number(this.config?.maxSteps || process.env.AUTOCLOW_MAX_STEPS || DEFAULT_MAX_STEPS);
-    const taskTimeoutMs = Number(this.config?.taskTimeoutMs || process.env.AUTOCLOW_TASK_TIMEOUT_MS || 0);
+    // Guard against non-numeric config/env values: Number('junk') is NaN and
+    // NaN comparisons are always false, which would silently disable both
+    // caps and let a runaway task burn tokens forever. Fall back to defaults.
+    const rawMaxSteps = Number(this.config?.maxSteps || process.env.AUTOCLOW_MAX_STEPS || DEFAULT_MAX_STEPS);
+    const maxSteps = Number.isFinite(rawMaxSteps) && rawMaxSteps >= 1 ? Math.floor(rawMaxSteps) : DEFAULT_MAX_STEPS;
+    const rawTimeoutMs = Number(this.config?.taskTimeoutMs || process.env.AUTOCLOW_TASK_TIMEOUT_MS || 0);
+    const taskTimeoutMs = Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0 ? rawTimeoutMs : 0;
+    // Verbose = a human is watching this terminal. JSON mode outputs NDJSON
+    // events instead; quietProgress (concurrent batch workers) suppresses all
+    // per-task detail so stdout carries only the batch's own summary lines.
+    const verbose = !this.jsonMode && !this.quietProgress;
     const deadline = taskTimeoutMs > 0 ? Date.now() + taskTimeoutMs : Number.POSITIVE_INFINITY;
     const abortController = new AbortController();
     const abortTimer = taskTimeoutMs > 0
@@ -181,21 +245,21 @@ RULES OF ENGAGEMENT:
     while (active) {
       if (step >= maxSteps) {
         status = 'max_steps';
-        if (!this.jsonMode) {
+        if (verbose) {
           console.log(chalk.yellow(`\n[MaxSteps] Reached the ${maxSteps}-turn limit; stopping to avoid a runaway loop.`));
         }
         break;
       }
       if (Date.now() > deadline) {
         status = 'timeout';
-        if (!this.jsonMode) {
+        if (verbose) {
           console.log(chalk.yellow(`\n[TaskTimeout] Wall-clock limit of ${taskTimeoutMs}ms reached; stopping.`));
         }
         break;
       }
       this.trimOldToolResults();
       step++;
-      const spinner: any = this.jsonMode
+      const spinner: any = (this.jsonMode || this.quietProgress)
         ? { stop() {}, fail() {}, text: '' }
         : ora('Thinking...').start();
 
@@ -223,7 +287,7 @@ RULES OF ENGAGEMENT:
         );
       } catch (error: any) {
         spinner.fail('Error during processing');
-        if (!this.jsonMode) console.error(chalk.red(error.message));
+        if (verbose) console.error(chalk.red(error.message));
         if (abortController.signal.aborted) {
           status = 'timeout';
           errorMessage = `task wall-clock timeout after ${taskTimeoutMs}ms`;
@@ -256,12 +320,12 @@ RULES OF ENGAGEMENT:
           if (delta?.reasoning_content) {
             if (!reasoningStarted) {
               spinner.stop();
-              if (!this.jsonMode) {
+              if (verbose) {
                 process.stdout.write(chalk.dim('\n[Thinking] '));
               }
               reasoningStarted = true;
             }
-            if (!this.jsonMode) {
+            if (verbose) {
               process.stdout.write(chalk.dim(delta.reasoning_content));
             }
             reasoningContent += delta.reasoning_content;
@@ -271,13 +335,13 @@ RULES OF ENGAGEMENT:
           if (delta?.content) {
             if (!contentStarted) {
               spinner.stop();
-              if (!this.jsonMode) {
+              if (verbose) {
                 if (reasoningStarted) process.stdout.write('\n');
                 process.stdout.write(chalk.blue("AutoClaw: "));
               }
               contentStarted = true;
             }
-            if (!this.jsonMode) {
+            if (verbose) {
               process.stdout.write(delta.content);
             }
             content += delta.content;
@@ -297,7 +361,7 @@ RULES OF ENGAGEMENT:
               if (tc.function?.name && !toolNamesSeen.has(idx)) {
                 toolNamesSeen.add(idx);
                 spinner.stop();
-                if (!this.jsonMode) {
+                if (verbose) {
                   if (contentStarted) process.stdout.write('\n');
                   if (reasoningStarted && !contentStarted) process.stdout.write('\n');
                   process.stdout.write(chalk.cyan(`[Calling] ${tc.function.name}\n`));
@@ -308,7 +372,7 @@ RULES OF ENGAGEMENT:
         }
       } catch (error: any) {
         spinner.fail('Error during processing');
-        if (!this.jsonMode) console.error(chalk.red(error.message));
+        if (verbose) console.error(chalk.red(error.message));
         if (abortController.signal.aborted) {
           status = 'timeout';
           errorMessage = `task wall-clock timeout after ${taskTimeoutMs}ms`;
@@ -320,7 +384,7 @@ RULES OF ENGAGEMENT:
         break;
       }
 
-      if (!this.jsonMode) {
+      if (verbose) {
         if (reasoningStarted) console.log(); // newline after reasoning
         if (contentStarted) console.log(); // newline after streamed content
         if (!reasoningStarted && !contentStarted) spinner.stop();
@@ -347,7 +411,7 @@ RULES OF ENGAGEMENT:
             functionArgs = JSON.parse(toolCall.function.arguments || '{}');
           } catch (parseError: any) {
             // Feed the failure back so the model can correct itself next turn
-            if (!this.jsonMode) {
+            if (verbose) {
               console.log(chalk.red(`\n[Tool] ${functionName} — malformed arguments (not valid JSON)`));
             }
             this.messages.push({
@@ -360,7 +424,7 @@ RULES OF ENGAGEMENT:
 
           if (this.jsonMode) {
             this.emitEvent({ event: 'tool_call', step, tool: functionName, args: functionArgs });
-          } else {
+          } else if (verbose) {
             // Display tool call info
             console.log(chalk.cyan(`\n[Tool] ${functionName}`));
             const argsStr = JSON.stringify(functionArgs, null, 2);
@@ -376,7 +440,7 @@ RULES OF ENGAGEMENT:
           let toolResult: string;
           try {
             const run = () => executeToolHandler(functionName, functionArgs, this.config);
-            toolResult = this.jsonMode ? await this.runToolQuietly(run) : await run();
+            toolResult = (this.jsonMode || this.quietProgress) ? await this.runToolQuietly(run) : await run();
           } catch (err: any) {
             toolResult = `Error: ${err.message}`;
           }
@@ -404,7 +468,7 @@ RULES OF ENGAGEMENT:
           if (resultLines.length > MAX_PREVIEW_LINES || truncation.truncated) {
             outputFile = await this.saveOutput(functionName, toolResult);
             this.lastOutputFile = outputFile;
-            if (!this.jsonMode) {
+            if (verbose) {
               console.log(chalk.green(`[Result]`));
               console.log(resultLines.slice(0, MAX_PREVIEW_LINES).join('\n'));
               const remaining = resultLines.length - MAX_PREVIEW_LINES;
@@ -413,7 +477,7 @@ RULES OF ENGAGEMENT:
               }
               console.log(chalk.dim(`  Type '/view' to see full output`));
             }
-          } else if (!this.jsonMode) {
+          } else if (verbose) {
             console.log(chalk.green(`[Result]`));
             console.log(boundedResult);
             this.lastOutputFile = null;

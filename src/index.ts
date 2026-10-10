@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import dotenv from 'dotenv';
-import { Agent } from './agent.js';
+import { Agent, pruneRunArtifacts } from './agent.js';
 import { parseManifest, runBatch } from './batch.js';
 import type { BatchResult, ManifestEntry, ResumeState } from './batch.js';
 import { PROVIDER_PRESETS, providerNames, resolveProvider } from './providers.js';
@@ -17,14 +17,29 @@ import * as readline from 'node:readline/promises';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
-// Handle Ctrl+C gracefully
+// Handle Ctrl+C gracefully. Interactive sessions exit 0; a batch in flight
+// is an interrupted job, not a success, so it reports a non-zero exit code
+// (130 = 128 + SIGINT, the usual convention) to its orchestrator.
+let interruptedExitCode = 0;
+
+// Retention pruning runs once per process — a 1000-task batch creates many
+// agents but only needs its artifacts pruned at startup. The state must live
+// above program.parse(): the parse call synchronously dispatches into
+// runChat/runBatchCommand, before module-level lets further down initialize.
+let prunedArtifacts = false;
+function pruneRunArtifactsOnce(): void {
+  if (prunedArtifacts) return;
+  prunedArtifacts = true;
+  pruneRunArtifacts();
+}
+
 function handleExit() {
   console.log(chalk.cyan("\n\nGoodbye! (Interrupted)"));
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }
   process.stdin.pause();
-  process.exit(0);
+  process.exit(interruptedExitCode);
 }
 
 process.on('SIGINT', handleExit);
@@ -56,6 +71,7 @@ interface AppConfig {
   autoConfirm?: boolean;
   allowDangerous?: boolean;
   jsonMode?: boolean;
+  quietProgress?: boolean;
   includeUsage?: boolean;
   maxSteps?: number;
   taskTimeoutMs?: number;
@@ -85,7 +101,7 @@ dotenv.config({ path: GLOBAL_ENV_FILE });
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // In dist/index.js, package.json is usually up one level in the root
 const pkgPath = path.join(__dirname, '..', 'package.json');
-let version = '1.3.6';
+let version = '1.3.7';
 
 try {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
@@ -675,6 +691,7 @@ async function resolveRuntime(options: any, opts: { interactive?: boolean } = {}
 
 async function runBatchCommand(manifestPath: string, globalOptions: any, cmdOptions: any) {
   const { apiKey, baseURL, model, fullConfig } = await resolveRuntime(globalOptions);
+  pruneRunArtifactsOnce();
 
   let raw: string;
   try {
@@ -716,15 +733,38 @@ async function runBatchCommand(manifestPath: string, globalOptions: any, cmdOpti
   }
   const concurrency = Math.max(1, parseInt(cmdOptions.concurrency ?? '1', 10) || 1);
 
+  // Persist results incrementally: one JSONL line per task, appended the
+  // moment it finishes. A crashed or killed batch therefore keeps everything
+  // that completed, and --resume has something to read on the next attempt.
+  // With --resume the previous file is kept as the starting point (skipped
+  // tasks' lines are already in it); without it a fresh run truncates first.
+  if (!resumeState) {
+    try {
+      fs.writeFileSync(outputPath, '', 'utf-8');
+    } catch (err: any) {
+      console.error(chalk.red(`Cannot write results to ${outputPath}: ${err.message}`));
+      process.exit(1);
+    }
+  }
+  const appendResult = (r: BatchResult) => {
+    try {
+      fs.appendFileSync(outputPath, JSON.stringify(r) + '\n', 'utf-8');
+    } catch (err: any) {
+      console.error(chalk.yellow(`Warning: failed to append result for '${r.id}' to ${outputPath}: ${err.message}`));
+    }
+  };
+
   console.log(chalk.bold.cyan(`AutoClaw Batch 🦞  ${entries.length} task(s)${concurrency > 1 ? ` (concurrency ${concurrency})` : ''}${resumeState ? ' [resume]' : ''}`));
   console.log(chalk.dim(`Results: ${outputPath}\n`));
   const startedAt = Date.now();
+  interruptedExitCode = 130;
 
   const { results, completed, failed, skipped } = await runBatch(
     entries,
     async (entry: ManifestEntry): Promise<BatchResult> => {
       // A fresh Agent per task keeps contexts isolated; per-task overrides
-      // beat the globally resolved defaults.
+      // beat the globally resolved defaults. Concurrency > 1 suppresses
+      // per-task progress so stdout stays readable as summary lines only.
       const taskPreset = resolveProvider(entry.provider);
       const taskModel = entry.model || taskPreset?.defaultModel || model;
       const taskBaseURL = taskPreset?.baseUrl || baseURL;
@@ -732,6 +772,7 @@ async function runBatchCommand(manifestPath: string, globalOptions: any, cmdOpti
         ...fullConfig,
         // The results file is the machine-readable contract in batch mode.
         jsonMode: false,
+        quietProgress: concurrency > 1,
         maxSteps: entry.maxSteps ?? fullConfig.maxSteps,
         taskTimeoutMs: entry.taskTimeoutMs ?? fullConfig.taskTimeoutMs
       };
@@ -753,19 +794,17 @@ async function runBatchCommand(manifestPath: string, globalOptions: any, cmdOpti
       concurrency,
       resume: resumeState,
       onResult: (entry, result, done, total) => {
+        // Skipped (resume) tasks' lines are already in the previous file.
+        if (!resumeState?.completedIds.has(entry.id)) {
+          appendResult(result);
+        }
         const color = result.status === 'completed' ? chalk.green : chalk.red;
         console.log(color(`[${done}/${total}] ${entry.id} -> ${result.status} (${Math.round(result.durationMs / 1000)}s)`));
       }
     }
   );
 
-  try {
-    fs.writeFileSync(outputPath, results.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
-  } catch (err: any) {
-    console.error(chalk.red(`Failed to write results to ${outputPath}: ${err.message}`));
-    process.exit(1);
-  }
-
+  interruptedExitCode = 0;
   const skipNote = skipped > 0 ? `, ${skipped} skipped (resume)` : '';
   console.log(chalk.cyan(`\nBatch done: ${completed}/${results.length + skipped} completed, ${failed} failed${skipNote} in ${Math.round((Date.now() - startedAt) / 1000)}s -> ${outputPath}`));
   process.exit(failed > 0 ? 1 : 0);
@@ -775,7 +814,8 @@ async function runChat(queryParts: string[], options: any) {
   if (options.interactive) {
     console.log(chalk.bold.cyan("Welcome to AutoClaw CLI 🦞"));
   }
-  
+  pruneRunArtifactsOnce();
+
   const initialQuery = queryParts.join(' ');
   
   const { apiKey, baseURL, model, fullConfig } = await resolveRuntime(options);

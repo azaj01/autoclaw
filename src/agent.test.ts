@@ -544,6 +544,106 @@ describe('Agent.chat', () => {
       expect(m.content).not.toContain('identical');
     }
   });
+
+  it('falls back to the default step cap when maxSteps is not a finite number', async () => {
+    const { Agent } = await import('./agent.js');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    mocks.createMock.mockImplementation(async () =>
+      streamFrom([
+        {
+          tool_calls: [
+            { index: 0, id: `call-${Math.random()}`, type: 'function', function: { name: 'read_file', arguments: '{}' } }
+          ]
+        }
+      ])
+    );
+    mocks.executeToolHandlerMock.mockResolvedValue('ok');
+
+    // Number('not-a-number') is NaN; NaN comparisons are always false, which
+    // used to disable the cap entirely and let the loop run forever.
+    const agent = new Agent('test-key', undefined, 'test-model', { maxSteps: 'not-a-number' as any });
+    const result = await agent.chat('loop forever');
+
+    expect(result.status).toBe('max_steps');
+    expect(mocks.createMock).toHaveBeenCalledTimes(25);
+  });
+
+  it('treats a non-numeric taskTimeoutMs as no timeout instead of a bogus deadline', async () => {
+    const { Agent } = await import('./agent.js');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    mocks.createMock.mockResolvedValueOnce(streamFrom([{ content: 'fine' }]));
+
+    const agent = new Agent('test-key', undefined, 'test-model', { taskTimeoutMs: 'whenever' as any });
+    const result = await agent.chat('quick task');
+
+    expect(result.status).toBe('completed');
+    expect(result.message).toBe('fine');
+  });
+
+  it('suppresses per-run terminal output in quietProgress mode', async () => {
+    const { Agent } = await import('./agent.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    mocks.createMock
+      .mockResolvedValueOnce(
+        streamFrom([
+          {
+            tool_calls: [
+              { index: 0, id: 'call-1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'README.md' }) } }
+            ]
+          }
+        ])
+      )
+      .mockResolvedValueOnce(streamFrom([{ content: 'All done' }]));
+    mocks.executeToolHandlerMock.mockResolvedValueOnce('file content');
+
+    const agent = new Agent('test-key', undefined, 'test-model', { quietProgress: true });
+    const result = await agent.chat('read the readme');
+
+    expect(mocks.oraFactoryMock).not.toHaveBeenCalled();
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(mocks.executeToolHandlerMock).toHaveBeenCalledWith('read_file', { path: 'README.md' }, { quietProgress: true });
+    expect(result.status).toBe('completed');
+    expect(result.message).toBe('All done');
+  });
+
+  it('restores the original console functions when quiet tool runs overlap', async () => {
+    const { Agent } = await import('./agent.js');
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    mocks.createMock.mockImplementation(async () =>
+      streamFrom([
+        {
+          tool_calls: [
+            { index: 0, id: `call-${Math.random()}`, type: 'function', function: { name: 'read_file', arguments: '{}' } }
+          ]
+        }
+      ])
+    );
+    // The handler prints and takes a tick, so two concurrent agents overlap
+    // inside runToolQuietly and the reference count must protect the restore.
+    mocks.executeToolHandlerMock.mockImplementation(async () => {
+      console.log('tool says hi');
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return 'ok';
+    });
+
+    const before = console.log;
+    const a = new Agent('k', undefined, 'm', { jsonMode: true });
+    const b = new Agent('k', undefined, 'm', { jsonMode: true });
+    await Promise.all([a.chat('task a'), b.chat('task b')]);
+
+    expect(console.log).toBe(before);
+    // while redirected, tool prints went to stderr — never through the spied stdout contract
+    expect(logSpy).not.toHaveBeenCalledWith('tool says hi');
+  });
 });
 
 describe('system prompt shell guidance', () => {

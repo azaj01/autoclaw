@@ -11,9 +11,10 @@ import { fileURLToPath } from 'node:url';
 // LLM endpoint, so they need `npm run build` to have been executed first.
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js');
 
-type MockMode = 'ok' | 'fail' | 'toolloop';
+type MockMode = 'ok' | 'fail' | 'toolloop' | 'hangafter';
 
 async function startMockLLM(mode: MockMode) {
+  let served = 0;
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) {
       res.writeHead(404);
@@ -23,6 +24,11 @@ async function startMockLLM(mode: MockMode) {
     if (mode === 'fail') {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'mock server failure', type: 'server_error' } }));
+      return;
+    }
+    if (mode === 'hangafter' && ++served > 1) {
+      // First request completes, later ones never get a response — simulates
+      // an LLM endpoint that hangs mid-batch.
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -53,7 +59,12 @@ async function startMockLLM(mode: MockMode) {
   const address = server.address() as net.AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    close: () => new Promise<void>(resolve => server.close(() => resolve()))
+    // closeAllConnections drops any hung request sockets so close() cannot
+    // block on clients that will never finish.
+    close: () => new Promise<void>(resolve => {
+      (server as any).closeAllConnections?.();
+      server.close(() => resolve());
+    })
   };
 }
 
@@ -159,6 +170,78 @@ describe('CLI end-to-end (spawned process, mock LLM)', () => {
 
       expect(code).toBe(2);
       expect(stdout).toContain('[MaxSteps]');
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('keeps results written so far when the process is killed mid-batch', { timeout: 90000 }, async () => {
+    if (!hasDist) return console.warn('skipping: dist/index.js not built');
+    const mock = await startMockLLM('hangafter');
+    try {
+      const manifest = path.join(workDir, 'crashy.jsonl');
+      fs.writeFileSync(manifest, '{"id":"first","task":"finishes"}\n{"id":"second","task":"hangs"}\n');
+      const resultsPath = path.join(workDir, 'crashy.results.jsonl');
+
+      const child = spawn(process.execPath, [cliPath, 'batch', manifest, '-y'], {
+        cwd: workDir,
+        env: {
+          ...process.env,
+          HOME: workDir,
+          USERPROFILE: workDir,
+          OPENAI_API_KEY: 'test-key',
+          OPENAI_BASE_URL: mock.baseUrl
+        }
+      });
+
+      // Wait for the first result line to hit the disk, then hard-kill the
+      // CLI — simulating a crash / OOM kill, not a graceful signal. The
+      // incremental writer must already have persisted task one.
+      const deadline = Date.now() + 30000;
+      let sawFirst = false;
+      while (Date.now() < deadline) {
+        try {
+          if (fs.readFileSync(resultsPath, 'utf-8').includes('"id":"first"')) {
+            sawFirst = true;
+            break;
+          }
+        } catch { /* file not created yet */ }
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      child.kill();
+
+      expect(sawFirst).toBe(true);
+      const lines = fs.readFileSync(resultsPath, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ id: 'first', status: 'completed', message: 'Done' });
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('resume appends only newly-run tasks to the previous results file', { timeout: 60000 }, async () => {
+    if (!hasDist) return console.warn('skipping: dist/index.js not built');
+    const mock = await startMockLLM('ok');
+    try {
+      const manifest = path.join(workDir, 'resume.jsonl');
+      fs.writeFileSync(manifest, '{"id":"r1","task":"already done"}\n{"id":"r2","task":"fresh"}\n');
+      const resultsPath = path.join(workDir, 'resume.results.jsonl');
+      fs.writeFileSync(resultsPath, JSON.stringify({ id: 'r1', status: 'completed', steps: 1, message: 'Done', durationMs: 5 }) + '\n');
+
+      const { code, stdout } = await runCli(['batch', manifest, '-y', '--resume'], {
+        HOME: workDir,
+        USERPROFILE: workDir,
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_BASE_URL: mock.baseUrl
+      });
+
+      expect(code).toBe(0);
+      expect(stdout).toContain('1 skipped (resume)');
+
+      const lines = fs.readFileSync(resultsPath, 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatchObject({ id: 'r1', status: 'completed' });
+      expect(lines[1]).toMatchObject({ id: 'r2', status: 'completed' });
     } finally {
       await mock.close();
     }
